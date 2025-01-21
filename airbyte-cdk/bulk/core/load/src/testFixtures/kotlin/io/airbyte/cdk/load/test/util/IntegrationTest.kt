@@ -176,6 +176,12 @@ abstract class IntegrationTest(
         streamStatus: AirbyteStreamStatus? = AirbyteStreamStatus.COMPLETE,
         useFileTransfer: Boolean = false,
     ): List<AirbyteMessage> {
+        val fileTransferProperty =
+            if (useFileTransfer) {
+                mapOf(Property("airbyte.file-transfer.enabled", "USE_FILE_TRANSFER") to "true")
+            } else {
+                emptyMap()
+            }
         val destination =
             destinationProcessFactory.createDestinationProcess(
                 "write",
@@ -183,7 +189,7 @@ abstract class IntegrationTest(
                 catalog.asProtocolObject(),
                 useFileTransfer = useFileTransfer,
                 envVars = envVars,
-                micronautProperties = micronautProperties,
+                micronautProperties = micronautProperties + fileTransferProperty,
             )
         return runBlocking(Dispatchers.IO) {
             launch { destination.run() }
