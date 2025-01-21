@@ -58,7 +58,6 @@ abstract class IntegrationTest(
     /** See [RecordDiffer.nullEqualsUnset]. */
     val nullEqualsUnset: Boolean = false,
     val configUpdater: ConfigurationUpdater = FakeConfigurationUpdater,
-    val envVars: Map<String, String> = emptyMap(),
     val micronautProperties: Map<Property, String> = emptyMap(),
 ) {
     // Intentionally don't inject the actual destination process - we need a full factory
@@ -188,7 +187,6 @@ abstract class IntegrationTest(
                 configContents,
                 catalog.asProtocolObject(),
                 useFileTransfer = useFileTransfer,
-                envVars = envVars,
                 micronautProperties = micronautProperties + fileTransferProperty,
             )
         return runBlocking(Dispatchers.IO) {
@@ -232,7 +230,6 @@ abstract class IntegrationTest(
                 configContents,
                 DestinationCatalog(listOf(stream)).asProtocolObject(),
                 useFileTransfer,
-                envVars,
                 micronautProperties = micronautProperties,
             )
         return runBlocking(Dispatchers.IO) {
@@ -304,7 +301,11 @@ abstract class IntegrationTest(
         // inside NonDockerizedDestination.
         // This field has no effect on DockerizedDestination, which explicitly
         // sets env vars when invoking `docker run`.
-        @SystemStub lateinit var nonDockerMockEnvVars: EnvironmentVariables
+        /**
+         * You probably don't want to actually interact with this. This is generally intended to
+         * support a specific legacy behavior. Prefer using micronaut properties when possible.
+         */
+        @SystemStub private lateinit var nonDockerMockEnvVars: EnvironmentVariables
 
         @JvmStatic
         @BeforeAll
