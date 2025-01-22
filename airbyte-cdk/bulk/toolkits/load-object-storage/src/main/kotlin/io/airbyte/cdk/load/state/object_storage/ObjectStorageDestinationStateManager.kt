@@ -8,8 +8,10 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonProperty
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import io.airbyte.cdk.load.command.DestinationStream
+import io.airbyte.cdk.load.command.Overwrite
 import io.airbyte.cdk.load.file.object_storage.ObjectStorageClient
 import io.airbyte.cdk.load.file.object_storage.PathFactory
+import io.airbyte.cdk.load.file.object_storage.PathMatcher
 import io.airbyte.cdk.load.file.object_storage.RemoteObject
 import io.airbyte.cdk.load.state.DestinationState
 import io.airbyte.cdk.load.state.DestinationStatePersister
@@ -22,6 +24,8 @@ import io.micronaut.context.annotation.Secondary
 import jakarta.inject.Singleton
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.fold
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
@@ -29,24 +33,25 @@ import kotlinx.coroutines.sync.withLock
 
 @SuppressFBWarnings("NP_NONNULL_PARAM_VIOLATION", justification = "Kotlin async continuation")
 class ObjectStorageDestinationState(
+    @JsonIgnore private val client: ObjectStorageClient<*>? = null,
+    @JsonIgnore private val matcher: PathMatcher? = null,
     // (State -> (GenerationId -> (Key -> PartNumber)))
     @JsonProperty("generations_by_state")
     var generationMap:
         ConcurrentHashMap<State, ConcurrentHashMap<Long, ConcurrentHashMap<String, Long>>> =
         ConcurrentHashMap(),
-    @JsonProperty("count_by_key") var countByKey: MutableMap<String, Long> = mutableMapOf()
+    @JsonProperty("count_by_key")
+    var countByKey: ConcurrentHashMap<String, AtomicLong> = ConcurrentHashMap()
 ) : DestinationState {
     enum class State {
         STAGED,
         FINALIZED
     }
 
-    @JsonIgnore private val countByKeyLock = Mutex()
+    @JsonIgnore private val uniquenessCheckLock = Mutex()
 
     companion object {
         const val METADATA_GENERATION_ID_KEY = "ab-generation-id"
-        const val STREAM_NAMESPACE_KEY = "ab-stream-namespace"
-        const val STREAM_NAME_KEY = "ab-stream-name"
         const val OPTIONAL_ORDINAL_SUFFIX_PATTERN = "(-[0-9]+)?"
 
         fun metadataFor(stream: DestinationStream): Map<String, String> =
@@ -68,12 +73,6 @@ class ObjectStorageDestinationState(
     suspend fun removeObject(generationId: Long, key: String, isStaging: Boolean = false) {
         val state = if (isStaging) State.STAGED else State.FINALIZED
         generationMap[state]?.get(generationId)?.remove(key)
-    }
-
-    suspend fun dropGenerationsBefore(minimumGenerationId: Long) {
-        State.entries.forEach { state ->
-            (0 until minimumGenerationId).forEach { generationMap[state]?.remove(it) }
-        }
     }
 
     data class Generation(
@@ -126,18 +125,43 @@ class ObjectStorageDestinationState(
     }
 
     /** Used to guarantee the uniqueness of a key */
-    suspend fun ensureUnique(key: String): String {
-        val ordinal =
-            countByKeyLock.withLock {
-                countByKey.merge(key, 0L) { old, new -> maxOf(old + 1, new) }
+    suspend fun ensureUnique(key: String): String =
+        uniquenessCheckLock.withLock {
+            // First check the cache. If we did a full search this
+            // will be exhaustive. If we did not, this will only
+            // contain keys we've already checked.
+            val count = countByKey[key]
+            if (count != null) {
+                val ordinal = count.incrementAndGet()
+                return "$key-$ordinal"
+            } else if (client == null || matcher == null) {
+                // No way to search, assume our list was exhaustive
+                countByKey[key] = AtomicLong(0L)
+                return key
             }
-                ?: 0L
-        return if (ordinal > 0L) {
-            "$key-$ordinal"
-        } else {
-            key
+
+            // Actually check the key, and update the cache
+            client
+                .list(key)
+                .fold(-1L) { lastMax, obj ->
+                    val match = matcher.match(obj.key)
+                    if (match == null) {
+                        // Assume this is a client-produced file and ignore.
+                        lastMax
+                    } else {
+                        val ordinal = match.customSuffix?.substring(1)?.toLong() ?: 0L
+                        maxOf(lastMax, ordinal)
+                    }
+                }
+                .let { maxOrdinal ->
+                    countByKey[key] = AtomicLong(maxOrdinal + 1)
+                    if (maxOrdinal > -1L) {
+                        "$key-${maxOrdinal + 1}"
+                    } else {
+                        key
+                    }
+                }
         }
-    }
 }
 
 @SuppressFBWarnings("NP_NONNULL_PARAM_VIOLATION", justification = "Kotlin async continuation")
@@ -183,6 +207,15 @@ class ObjectStorageFallbackPersister(
         // Add a suffix matching an OPTIONAL -[0-9]+ ordinal
         val matcher =
             pathFactory.getPathMatcher(stream, suffixPattern = OPTIONAL_ORDINAL_SUFFIX_PATTERN)
+
+        if (!(stream.importType == Overwrite || stream.minimumGenerationId > 0)) {
+            log.info {
+                "Skipping metadata search for import type ${stream.importType} (genId = ${stream.generationId}; minGenId = ${stream.minimumGenerationId})"
+            }
+
+            return ObjectStorageDestinationState(client, matcher, ConcurrentHashMap())
+        }
+
         val longestUnambiguous =
             pathFactory.getLongestStreamConstantPrefix(stream, isStaging = false)
         log.info {
@@ -215,12 +248,14 @@ class ObjectStorageFallbackPersister(
             )
 
         return ObjectStorageDestinationState(
+            null,
+            null,
             ConcurrentHashMap(
                 mapOf(
                     ObjectStorageDestinationState.State.FINALIZED to generationIdToKeyAndFileNumber
                 )
             ),
-            countByKey
+            countByKey.map { (key, value) -> key to AtomicLong(value) }.toMap(ConcurrentHashMap())
         )
     }
 
