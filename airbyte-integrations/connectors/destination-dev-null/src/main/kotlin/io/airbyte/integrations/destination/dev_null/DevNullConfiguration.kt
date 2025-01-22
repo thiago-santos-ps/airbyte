@@ -41,7 +41,7 @@ data class DevNullConfiguration(
  */
 @Singleton
 class DevNullConfigurationFactory(
-    @Value("\${airbyte.destination.record-batch-size-override}")
+    @Value("\${airbyte.destination.core.record-batch-size-override}")
     private val recordBatchSizeBytesOverride: Long?
 ) : DestinationConfigurationFactory<DevNullSpecification, DevNullConfiguration> {
     private val log = KotlinLogging.logger {}

@@ -37,7 +37,7 @@ class SyncBeanFactory {
     @Singleton
     @Named("diskManager")
     fun diskManager(
-        @Value("\${airbyte.resources.disk.bytes}") availableBytes: Long,
+        @Value("\${airbyte.destination.core.resources.disk.bytes}") availableBytes: Long,
     ): ReservationManager {
         return ReservationManager(availableBytes)
     }
@@ -52,7 +52,7 @@ class SyncBeanFactory {
     @Singleton
     @Named("fileAggregateQueue")
     fun fileAggregateQueue(
-        @Value("\${airbyte.resources.disk.bytes}") availableBytes: Long,
+        @Value("\${airbyte.destination.core.resources.disk.bytes}") availableBytes: Long,
         config: DestinationConfiguration,
         catalog: DestinationCatalog
     ): MultiProducerChannel<FileAggregateMessage> {

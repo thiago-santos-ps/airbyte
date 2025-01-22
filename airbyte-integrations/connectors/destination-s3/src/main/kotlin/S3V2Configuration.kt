@@ -53,7 +53,7 @@ data class S3V2Configuration<T : OutputStream>(
 
 @Singleton
 class S3V2ConfigurationFactory(
-    @Value("\${airbyte.destination.record-batch-size-override}")
+    @Value("\${airbyte.destination.core.record-batch-size-override}")
     val recordBatchSizeOverride: Long? = null
 ) : DestinationConfigurationFactory<S3V2Specification, S3V2Configuration<*>> {
     override fun makeWithoutExceptionHandling(pojo: S3V2Specification): S3V2Configuration<*> {
